@@ -1,3 +1,4 @@
+// src/components/GlobeClient.tsx
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -5,12 +6,15 @@ import * as THREE from "three";
 import Globe from "three-globe";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
+import type { TlsPoint } from "@/types/events";
+import { MOCK_TLS } from "@/data/mock/tls";
+
 export default function GlobeClient() {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
     const container = containerRef.current;
+    if (!container) return;
 
     // Scene
     const scene = new THREE.Scene();
@@ -28,11 +32,14 @@ export default function GlobeClient() {
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
 
-    // Controls (rotate/zoom)
+    // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    controls.minDistance = 160;
+    controls.maxDistance = 700;
 
     // Lights
     scene.add(new THREE.AmbientLight(0xffffff, 0.9));
@@ -42,30 +49,49 @@ export default function GlobeClient() {
 
     // Globe
     const globe = new Globe()
-      .globeImageUrl(
-        "https://unpkg.com/three-globe/example/img/earth-dark.jpg"
-      )
-      .bumpImageUrl(
-        "https://unpkg.com/three-globe/example/img/earth-topology.png"
-      )
+      .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-dark.jpg")
+      .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
       .showAtmosphere(true)
       .atmosphereColor("#3a99ff")
       .atmosphereAltitude(0.18);
 
     scene.add(globe as unknown as THREE.Object3D);
 
+    // Points — use string accessors + widened types to satisfy TS
+    (globe as any)
+      .pointsData(MOCK_TLS as unknown as object[])
+      .pointLat("lat")
+      .pointLng("lng")
+      .pointAltitude(() => 0.015)
+      .pointRadius((d: any) => d.radius ?? 0.9)
+      .pointColor((d: any) => d.color ?? "#ff5b5b")
+      .pointsMerge(true);
+
     // Render loop
+    let raf = 0;
     const animate = () => {
-      requestAnimationFrame(animate);
+      raf = requestAnimationFrame(animate);
       controls.update();
       renderer.render(scene, camera);
     };
     animate();
 
+    // Resize
+    const onResize = () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    };
+    window.addEventListener("resize", onResize);
+
     // Cleanup
     return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
       renderer.dispose();
-      container.removeChild(renderer.domElement);
+      if (container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
     };
   }, []);
 
