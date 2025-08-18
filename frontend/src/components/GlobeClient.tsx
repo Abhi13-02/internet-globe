@@ -16,6 +16,14 @@ export default function GlobeClient() {
   const [selected, setSelected] = useState<TlsPoint | null>(null);
   const [hovered, setHovered] = useState<TlsPoint | null>(null);
 
+  useEffect(() => {
+    const ws = new WebSocket("ws://localhost:8000/ws/live");
+    ws.onopen = () => console.log("✅ WebSocket connected");
+    ws.onmessage = (e) => console.log("📦 WS batch:", JSON.parse(e.data));
+    ws.onerror = (e) => console.error("❌ WS error", e);
+    return () => ws.close();
+  }, []);
+
 
 
   // Stable data reference to avoid unnecessary React re-renders inside the Globe
