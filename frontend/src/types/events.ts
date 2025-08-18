@@ -1,26 +1,22 @@
 // src/types/events.ts
 
+// src/types/events.ts
 export type TlsPoint = {
-  // position
   lat: number;
   lng: number;
-
-  // identity
   domain: string;
-  ip?: string | null;
-  issuer?: string | null;
-
-  // context
-  sanCount?: number;        // number of SANs on the cert
-  expiresInDays?: number;   // days until expiry (approx)
-  org?: string | null;      // hosting org/ISP (e.g., Cloudflare)
-  country?: string | null;  // 2-letter country (e.g., "US")
-  ts: string;               // when we saw it (ISO)
-
-  // optional future styling hooks
-  color?: string;
-  radius?: number;
+  ip: string;
+  ts: number | string;   // ingest gives epoch seconds (number)
+  // optional/enrichment
+  issuer?: string;
+  sanCount?: number;
+  expiresInDays?: number;
+  org?: string;
+  country?: string;
+  color?: string;   // default in UI
+  radius?: number;  // default in UI
 };
+
 
 // Room to grow later (BGP, Outages, etc.)
 export type BgpEvent = {
