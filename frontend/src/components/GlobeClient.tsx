@@ -12,7 +12,7 @@ export default function GlobeClient() {
   const globeRef = useRef<GlobeMethods | null>(null);
   const [arcs, setArcs] = useState<(BgpArcV0 & { _arrived: number })[]>([]);
 
-  const TTL_MS = 1000; // 3 seconds
+  const TTL_MS = 1000; // 1 seconds
 
   // WebSocket + TTL
   useEffect(() => {

@@ -6,22 +6,22 @@ services:
     volumes:
       - redisdata:/data
 
-  ingest-bgp:
-    build: ./services/ingest-bgp
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STREAM=bgp.events
-      - STREAM_MAXLEN=50000
-    depends_on: [redis]
+  # ingest-bgp:
+  #   build: ./services/ingest-bgp
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - STREAM=bgp.events
+  #     - STREAM_MAXLEN=50000
+  #   depends_on: [redis]
 
-  gateway:
-    build: ./services/gateway
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - WS_BATCH_MS=1000
-      - CORS_ORIGIN=http://localhost:3000
-    ports: ["8000:8000"]
-    depends_on: [redis]
+  # gateway:
+  #   build: ./services/gateway
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - WS_BATCH_MS=1000
+  #     - CORS_ORIGIN=http://localhost:3000
+  #   ports: ["8000:8000"]
+  #   depends_on: [redis]
 
 volumes:
   redisdata:

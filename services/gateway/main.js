@@ -5,7 +5,7 @@ const cors = require('cors');
 
 const app = express();
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379/0';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379/0';
 const STREAM = process.env.STREAM || 'bgp.events';
 const GROUP = process.env.GROUP || 'bgp:ws';
 const CONSUMER_ID = process.env.CONSUMER_ID || 'gateway-1';
