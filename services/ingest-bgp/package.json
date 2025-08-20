@@ -1,0 +1,15 @@
+{
+  "name": "ingest-bgp",
+  "version": "1.0.0",
+  "description": "BGP events data generator",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "node main.js"
+  },
+  "dependencies": {
+    "redis": "^4.6.12"
+  },
+  "author": "",
+  "license": "MIT"
+}

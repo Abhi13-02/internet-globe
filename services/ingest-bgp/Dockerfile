@@ -7,6 +7,6 @@ RUN npm install
 
 COPY . .
 
-EXPOSE 8000
+ENV REDIS_URL=redis://redis:6379/0
 
 CMD ["npm", "start"]

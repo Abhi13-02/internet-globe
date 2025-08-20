@@ -1,67 +1,45 @@
-// src/components/GlobeClient.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import Tooltip from "@/components/Tooltip";
-import type { TlsPoint } from "@/types/events";
-
-// Types from react-globe.gl
 import type { GlobeMethods } from "react-globe.gl";
+import { BgpArcV0 } from "@/types/events";
 
-// SSR-safe globe
 const Globe = dynamic(() => import("react-globe.gl"), { ssr: false });
 
 export default function GlobeClient() {
   const globeRef = useRef<GlobeMethods | null>(null);
+  const [arcs, setArcs] = useState<(BgpArcV0 & { _arrived: number })[]>([]);
 
-  const [points, setPoints] = useState<TlsPoint[]>([]);
-  const [selected, setSelected] = useState<TlsPoint | null>(null);
-  const [hovered, setHovered] = useState<TlsPoint | null>(null);
+  const TTL_MS = 1000; // 3 seconds
 
-  // Normalize any WS payload to TlsPoint[]
-  const normalize = (msg: any): TlsPoint[] => {
-    const arr = Array.isArray(msg) ? msg : Array.isArray(msg?.items) ? msg.items : msg ? [msg] : [];
-    return arr
-      .filter(Boolean)
-      .map((p: any) => ({
-        lat: Number(p.lat),
-        lng: Number(p.lng),
-        domain: String(p.domain ?? "unknown"),
-        ip: String(p.ip ?? ""),
-        ts: p.ts, // epoch seconds or ISO
-        color: p.color ?? "#ff5b5b",
-        radius: p.radius ?? 0.9,
-        issuer: p.issuer,
-        sanCount: p.sanCount,
-        expiresInDays: p.expiresInDays,
-        org: p.org,
-        country: p.country
-      }));
-  };
-
-  // Connect to gateway WebSocket and accumulate points
+  // WebSocket + TTL
   useEffect(() => {
     const ws = new WebSocket("ws://localhost:8000/ws/live");
-    ws.onopen = () => console.log("✅ WebSocket connected");
     ws.onmessage = (e) => {
       try {
-        const batch = normalize(JSON.parse(e.data));
-        if (batch.length) setPoints((prev) => [...prev, ...batch].slice(-2000));
+        const msg = JSON.parse(e.data);
+        if (msg.type === "bgp" && Array.isArray(msg.items)) {
+          const now = Date.now() / 1000; // seconds
+          const fresh = msg.items.map((d: any) => ({ ...d, _arrived: now }));
+          setArcs((prev) => {
+            const cutoff = now - TTL_MS / 1000;
+            return [...prev, ...fresh].filter((a) => a._arrived >= cutoff);
+          });
+        }
       } catch (err) {
-        console.error("Bad WS message:", err);
+        console.error("WS parse error:", err);
       }
     };
     ws.onerror = (e) => console.error("❌ WS error", e);
     return () => ws.close();
   }, []);
 
-  // Tweak OrbitControls and initial POV
+  // Controls + POV
   useEffect(() => {
     const g = globeRef.current;
     if (!g) return;
-
     const controls = g.controls() as OrbitControls | undefined;
     if (controls) {
       controls.enableDamping = true;
@@ -73,47 +51,39 @@ export default function GlobeClient() {
     g.pointOfView({ altitude: 2.2 }, 0);
   }, []);
 
-  const onPointClick = (p?: any) => {
-    if (!p) return;
-    const d = p as TlsPoint;
-
-    if (globeRef.current && d.lat != null && d.lng != null) {
-      globeRef.current.pointOfView({ lat: d.lat, lng: d.lng, altitude: 1.2 }, 1200);
-    }
-    setSelected((prev) => (prev && prev.domain === d.domain && prev.ts === d.ts ? null : d));
+  // Helper: fade arcs by age
+  const getAge = (d: any) => {
+    const age = Date.now() / 1000 - (d._arrived ?? 0);
+    return age;
   };
 
   return (
-    <div className="relative w-full h-full">
+    <div className="w-full h-full">
       <Globe
-        ref={globeRef as any} // react-globe.gl expects a mutable ref to GlobeMethods
-        backgroundColor="rgba(0,0,0,1)"
-        showAtmosphere
-        atmosphereColor="#3a99ff"
-        atmosphereAltitude={0.18}
+        ref={globeRef as any}
         globeImageUrl="https://unpkg.com/three-globe/example/img/earth-dark.jpg"
-        bumpImageUrl="https://unpkg.com/three-globe/example/img/earth-topology.png"
-
-        // Live TLS points
-        pointsData={points}
-        pointLat="lat"
-        pointLng="lng"
-        pointRadius={(d: any) => d.radius ?? 0.9}                 // accessor (obj:any)=>number
-        pointAltitude={(d: any) => (hovered && d === hovered ? 0.03 : 0.015)}
-        pointColor={(d: any) => (hovered && d === hovered ? "#ffffff" : d.color ?? "#ff5b5b")}
-        pointsMerge={false}
-        pointResolution={12}
-
-        // Handlers — match library signatures
-        onPointClick={(p: object) => onPointClick(p)}
-        onPointHover={(p?: object | null) => setHovered((p as TlsPoint) ?? null)}
+        arcsData={arcs}
+        arcStartLat={(d: any) => d.src.lat}
+        arcStartLng={(d: any) => d.src.lng}
+        arcEndLat={(d: any) => d.dst.lat}
+        arcEndLng={(d: any) => d.dst.lng}
+        arcColor={(d: any) => {
+          const age = getAge(d);
+          if (age < 10) return d.color; // fresh = bright
+          if (age < 20) return "rgba(200,200,200,0.7)";
+          return "rgba(150,150,150,0.3)"; // near expiry = faded
+        }}
+        arcAltitude={(d: any) => {
+          const age = getAge(d);
+          if (age < 10) return 0.3;
+          if (age < 20) return 0.15;
+          return 0.05;
+        }}
+        arcStroke={0.7}
+        arcDashLength={0.4}
+        arcDashGap={0.2}
+        arcDashAnimateTime={1500}
       />
-
-      {selected && (
-        <div className="absolute top-4 right-4 z-50">
-          <Tooltip point={selected} onClose={() => setSelected(null)} />
-        </div>
-      )}
     </div>
   );
 }

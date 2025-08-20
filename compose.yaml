@@ -1,10 +1,18 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     ports: ["6379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
+
+  ingest-bgp:
+    build: ./services/ingest-bgp
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - STREAM=bgp.events
+      - STREAM_MAXLEN=50000
+    depends_on: [redis]
 
   gateway:
     build: ./services/gateway
@@ -13,17 +21,6 @@ services:
       - WS_BATCH_MS=1000
       - CORS_ORIGIN=http://localhost:3000
     ports: ["8000:8000"]
-    depends_on: [redis]
-
-  ingest-tls:
-    build: ./services/ingest-tls
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - CERTSTREAM_URL=wss://certstream.calidog.io/  # public feed
-      - SAMPLING_RATE=5
-      - GEOIP_DB_PATH=/data/GeoLite2-City.mmdb
-    volumes:
-      - ./docker/geolite:/data:ro
     depends_on: [redis]
 
 volumes:

@@ -1,6 +1,5 @@
 // src/types/events.ts
 
-// src/types/events.ts
 export type TlsPoint = {
   lat: number;
   lng: number;
@@ -15,6 +14,19 @@ export type TlsPoint = {
   country?: string;
   color?: string;   // default in UI
   radius?: number;  // default in UI
+};
+
+export type BgpArcV0 = {
+  schema: "bgp.arc.v0";
+  ts: number;
+  event: "announce" | "withdraw";
+  prefix: string;
+  origin_asn: number;
+  peer_asn: number;
+  as_path: number[];
+  src: { lat: number; lng: number };
+  dst: { lat: number; lng: number };
+  color: string;
 };
 
 
