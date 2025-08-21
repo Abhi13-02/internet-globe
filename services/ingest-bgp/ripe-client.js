@@ -30,10 +30,14 @@ class RipeClient {
     this.streamName = streamName;
     this.maxLen = maxLen;
     this.ws = null;
-    this.reconnectInterval = 5000; // 5 seconds
+    this.reconnectInterval = 5000;
     this.isConnecting = false;
-    this.eventCount = 0;
-    this.filteredCount = 0;
+    
+    // Better metrics tracking
+    this.messagesReceived = 0;  // RIS messages
+    this.eventsGenerated = 0;   // Individual prefix events
+    this.eventsSent = 0;        // Events sent to Redis
+    this.subscriptionTime = 0;
     
     // Color configuration
     this.ANNOUNCE_COLOR = '#3aa3ff';
@@ -60,30 +64,33 @@ class RipeClient {
         console.log('✅ Connected to RIPE RIS Live!');
         this.isConnecting = false;
         
-        // Subscribe to BGP messages
-        // We're asking for real-time BGP announcements and withdrawals
-        const subscription = {
-          type: 'ris_subscribe',
-          data: {
-            // Subscribe to all RRCs (Route Reflection Collectors)
-            path: '',
-            
-            // Only get announcements and withdrawals
-            type: 'UPDATE',
-            
-            // Filter to reduce noise - only major prefixes
-            // This helps us avoid getting overwhelmed by data
-            socketOptions: {
-              includeRaw: false,
-              moreSpecific: false,
-              lessSpecific: false,
-              peer: ''
-            }
-          }
-        };
+        // Parse RRC list from environment
+        const rrcSet = process.env.RRC_SET ? process.env.RRC_SET.split(',') : ['rrc00'];
         
-        this.ws.send(JSON.stringify(subscription));
-        console.log('📡 Subscribed to BGP updates');
+        // Subscribe to each RRC separately for better control
+        rrcSet.forEach(rrc => {
+          const subscription = {
+            type: 'ris_subscribe',
+            data: {
+              host: rrc,
+              type: 'UPDATE',  // Only BGP UPDATE messages
+              socketOptions: {
+                includeRaw: false,  // We don't need raw BGP bytes
+                moreSpecific: true,
+                lessSpecific: true
+              }
+            }
+          };
+          
+          this.ws.send(JSON.stringify(subscription));
+          console.log(`📡 Subscribed to ${rrc}`);
+        });
+        
+        console.log(`✅ Subscribed to ${rrcSet.length} RRCs for UPDATE messages`);
+        this.subscriptionTime = Date.now();
+        
+        // Start metrics logging
+        this.startMetricsLogging();
       });
 
       this.ws.on('message', (data) => {
@@ -114,41 +121,56 @@ class RipeClient {
   }
 
   /**
+   * Start metrics logging every 10 seconds
+   */
+  startMetricsLogging() {
+    setInterval(() => {
+      const uptime = Math.floor((Date.now() - this.subscriptionTime) / 1000);
+      
+      console.log(`📊 Metrics [${uptime}s]:`, {
+        ris_messages: this.messagesReceived,
+        events_generated: this.eventsGenerated,
+        events_sent: this.eventsSent,
+        avg_messages_per_sec: Math.floor(this.messagesReceived / Math.max(uptime, 1)),
+        avg_events_per_sec: Math.floor(this.eventsSent / Math.max(uptime, 1)),
+        expansion_rate: `${(this.eventsGenerated / Math.max(this.messagesReceived, 1)).toFixed(1)}x`
+      });
+    }, 10000);
+  }
+
+  /**
    * Handle incoming WebSocket messages from RIPE
    */
   handleMessage(data) {
     const message = JSON.parse(data.toString());
     
-    // Skip non-data messages (like confirmations)
     if (message.type !== 'ris_message') {
       return;
     }
 
-    this.eventCount++;
+    this.messagesReceived++;  // Track RIS messages
     
-    // Log progress every 100 events
-    if (this.eventCount % 100 === 0) {
-      console.log(`📊 Processed ${this.eventCount} events (${this.filteredCount} sent to frontend)`);
-    }
-
     const bgpData = message.data;
     
-    // Filter: only process important ASNs to avoid overwhelming the frontend
     if (!this.shouldProcessEvent(bgpData)) {
       return;
     }
 
     // Convert RIPE format to our internal format
     const processedEvents = this.convertRipeToArc(bgpData);
+    this.eventsGenerated += processedEvents.length;  // Track generated events
     
     // Send each event to Redis
     processedEvents.forEach(async (arc) => {
       try {
         await this.redis.xAdd(this.streamName, '*', { data: JSON.stringify(arc) }, {
-          MAXLEN: this.maxLen,
-          APPROXIMATE: true
+          TRIM: {
+            strategy: 'MAXLEN',
+            strategyModifier: '~',
+            threshold: this.maxLen
+          }
         });
-        this.filteredCount++;
+        this.eventsSent++;
       } catch (error) {
         console.error('Error adding to Redis stream:', error);
       }
@@ -159,7 +181,7 @@ class RipeClient {
  * Determine if we should process this BGP event
  */
 shouldProcessEvent(bgpData) {
-  // Must be an UPDATE message (the only type we care about for visualization)
+  // Must be an UPDATE message
   if (bgpData.type !== 'UPDATE') {
     return false;
   }
@@ -177,37 +199,8 @@ shouldProcessEvent(bgpData) {
     return false;
   }
   
-  // Extract origin ASN from path (last element)
-  let originAsn = parseInt(bgpData.peer_asn); // fallback
-  if (bgpData.path && bgpData.path.length > 0) {
-    const lastPathElement = bgpData.path[bgpData.path.length - 1];
-    originAsn = Array.isArray(lastPathElement) ? lastPathElement[0] : lastPathElement;
-  }
-  
-  // Filter by important ASNs (using corrected ASN extraction)
-  const peerAsn = parseInt(bgpData.peer_asn);
-  const hasImportantASN = IMPORTANT_ASNS.has(originAsn) || IMPORTANT_ASNS.has(peerAsn);
-  
-  // Temporarily disable ASN filtering to test format
-  // if (!hasImportantASN) {
-  //   return false;
-  // }
-  
-  // Optional: Filter by prefix length (check within announcements)
-  if (hasAnnouncements) {
-    for (const announcement of bgpData.announcements) {
-      for (const prefix of announcement.prefixes) {
-        const prefixLength = parseInt(prefix.split('/')[1]); 
-        if (prefixLength <= 24) { // Keep /24 and larger blocks
-          return true; // At least one good prefix found
-        }
-      }
-    }
-    // If we only found small prefixes, reject
-    return false;
-  }
-  
-  // Withdrawals are always interesting
+  // For now, accept everything that passes basic validation
+  // We'll add smart filtering in Step B
   return true;
 }
 

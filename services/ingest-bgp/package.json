@@ -9,6 +9,7 @@
     "dev:mock": "USE_MOCK_DATA=true node main.js"
   },
   "dependencies": {
+    "dotenv": "^17.2.1",
     "redis": "^4.6.12",
     "ws": "^8.16.0"
   },

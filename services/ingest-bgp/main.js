@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { createClient } = require('redis');
 const RipeClient = require('./ripe-client');
 
