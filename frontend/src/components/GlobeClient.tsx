@@ -21,12 +21,14 @@ export default function GlobeClient() {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "bgp" && Array.isArray(msg.items)) {
-          const now = Date.now() / 1000; // seconds
-          const fresh = msg.items.map((d: any) => ({ ...d, _arrived: now }));
           setArcs((prev) => {
+            const now = Date.now() / 1000; // seconds
             const cutoff = now - TTL_MS / 1000;
-            return [...prev, ...fresh].filter((a) => a._arrived >= cutoff);
+            const afterCutoff = prev.filter((a) => a._arrived >= cutoff);
+            const fresh = msg.items.map((d: any) => ({ ...d, _arrived: now }));
+            return [...afterCutoff, ...fresh];
           });
+          console.log("WebSocket message received:", msg.items);
         }
       } catch (err) {
         console.error("WS parse error:", err);
