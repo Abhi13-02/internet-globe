@@ -21,6 +21,7 @@ const IMPORTANT_ASNS = new Set([
   9498, 9829, 55836, // Indian ISPs
 ]);
 
+
 // Only process these types of BGP messages
 const ALLOWED_TYPES = new Set(['announcement', 'withdrawal']);
 
@@ -39,6 +40,15 @@ class RipeClient {
     this.eventsSent = 0;        // Events sent to Redis
     this.subscriptionTime = 0;
     this.filteredCount = 0;     // Debug counter
+    
+    // Add throttling state
+    this.prefixLastSeen = new Map(); // prefix -> {ts, pathHash, type}
+    this.THROTTLE_WINDOW_MS = 1000; // 1 second per prefix
+    
+    // Metrics for throttling
+    this.throttled = 0;
+    this.pathChanges = 0;
+    this.typeFlips = 0;
     
     // Color configuration
     this.ANNOUNCE_COLOR = '#3aa3ff';
@@ -129,13 +139,36 @@ class RipeClient {
       const uptime = Math.floor((Date.now() - this.subscriptionTime) / 1000);
       
       console.log(`📊 Metrics [${uptime}s]:`, {
+        // Input metrics
         ris_messages: this.messagesReceived,
         events_generated: this.eventsGenerated,
+        
+        // Filtering metrics  
         events_sent: this.eventsSent,
-        avg_messages_per_sec: Math.floor(this.messagesReceived / Math.max(uptime, 1)),
-        avg_events_per_sec: Math.floor(this.eventsSent / Math.max(uptime, 1)),
-        expansion_rate: `${(this.eventsGenerated / Math.max(this.messagesReceived, 1)).toFixed(1)}x`
+        events_throttled: this.throttled,
+        
+        // Quality metrics (these should never be throttled!)
+        path_changes_preserved: this.pathChanges,
+        type_flips_preserved: this.typeFlips,
+        
+        // Rates
+        avg_events_in: Math.floor(this.eventsGenerated / Math.max(uptime, 1)),
+        avg_events_out: Math.floor(this.eventsSent / Math.max(uptime, 1)),
+        
+        // Effectiveness
+        reduction_rate: `${((1 - this.eventsSent / Math.max(this.eventsGenerated, 1)) * 100).toFixed(1)}%`,
+        
+        // Health check
+        quality_check: this.pathChanges > 0 && this.typeFlips > 0 ? '✅' : '⚠️'
       });
+      
+      // Clean up old prefix entries (memory management)
+      const cutoff = Date.now() - 60000; // 1 minute
+      for (const [prefix, data] of this.prefixLastSeen.entries()) {
+        if (data.ts < cutoff) {
+          this.prefixLastSeen.delete(prefix);
+        }
+      }
     }, 10000);
   }
 
@@ -161,8 +194,11 @@ class RipeClient {
     const processedEvents = this.convertRipeToArc(bgpData);
     this.eventsGenerated += processedEvents.length;  // Track generated events
     
-    // Send each event to Redis
-    processedEvents.forEach(async (arc) => {
+    // Apply throttling with exemptions
+    const eventsToSend = processedEvents.filter(event => !this.shouldThrottle(event));
+    
+    // Send filtered events to Redis
+    eventsToSend.forEach(async (arc) => {
       try {
         await this.redis.xAdd(this.streamName, '*', { data: JSON.stringify(arc) }, {
           TRIM: {
@@ -200,118 +236,170 @@ shouldProcessEvent(bgpData) {
     return false;
   }
   
-  // For now, accept everything that passes basic validation
-  // We'll add smart filtering in Step B
-  return true;
+  // NEW: Track interesting events for future anomaly detection
+  if (bgpData.announcements) {
+    for (const announcement of bgpData.announcements) {
+      const path = announcement.path || [];
+      
+      // Flag potential anomalies (don't filter yet, just prepare)
+      const flags = {
+        longPath: path.length > 7,  // Unusually long AS path
+        shortPath: path.length === 1, // Direct announcement
+        hasLoop: new Set(path).size !== path.length, // AS appears multiple times
+        tier1Transit: this.containsTier1(path), // Goes through major backbone
+        // We'll add RPKI validation here later
+      };
+      
+      // For now, accept everything but store these flags
+      // In Phase 2, we'll use these for anomaly detection
+    }
+  }
+  
+  return true; // Still accept everything for now
 }
+
+  containsTier1(path) {
+    const TIER1_ASNS = [174, 209, 286, 701, 1239, 1299, 2828, 2914, 3257, 3320, 3356, 3491, 5511, 6453, 6461, 6762, 6830, 7018];
+    return path.some(asn => TIER1_ASNS.includes(asn));
+  }
+
+  shouldThrottle(event) {
+    const now = Date.now();
+    const key = event.prefix;
+    const last = this.prefixLastSeen.get(key);
+    
+    // First time seeing this prefix
+    if (!last) {
+      this.prefixLastSeen.set(key, {
+        ts: now,
+        pathHash: this.hashPath(event.as_path),
+        type: event.event
+      });
+      return false; // Don't throttle
+    }
+    
+    // Check if enough time has passed
+    if (now - last.ts > this.THROTTLE_WINDOW_MS) {
+      this.prefixLastSeen.set(key, {
+        ts: now,
+        pathHash: this.hashPath(event.as_path),
+        type: event.event
+      });
+      return false; // Don't throttle
+    }
+    
+    // EXEMPTION 1: Type changed (announce ↔ withdraw)
+    if (event.event !== last.type) {
+      this.typeFlips++;
+      last.type = event.event;
+      last.ts = now;
+      return false; // Don't throttle - this is important!
+    }
+    
+    // EXEMPTION 2: Path changed significantly
+    const currentPathHash = this.hashPath(event.as_path);
+    if (currentPathHash !== last.pathHash) {
+      this.pathChanges++;
+      last.pathHash = currentPathHash;
+      last.ts = now;
+      return false; // Don't throttle - potential anomaly!
+    }
+    
+    // EXEMPTION 3: Long paths (potential path manipulation)
+    if (event.as_path.length > 7) {
+      return false; // Don't throttle suspicious paths
+    }
+    
+    // Otherwise throttle this duplicate
+    this.throttled++;
+    return true;
+  }
+  
+  hashPath(path) {
+    // Simple hash for path comparison
+    return path.join(',');
+  }
 
 
   /**
    * Convert RIPE RIS Live format to our BGP arc format
    */
   convertRipeToArc(bgpData) {
-    const arcs = [];
+    const events = [];
+    const timestamp = bgpData.timestamp;
     
-    // Debug: log first few events to understand the structure
-    if (this.filteredCount < 3) {
-      console.log('🔍 Debug BGP data:', JSON.stringify(bgpData, null, 2));
-      console.log('✅ Event passed shouldProcessEvent filter');
+    // Debug: Log first few messages to understand structure
+    if (this.eventsGenerated < 3) {
+      console.log('🔍 DEBUG: BGP Data Structure:', JSON.stringify(bgpData, null, 2));
     }
     
-    // Determine event type and color based on RIPE format
-    const hasAnnouncements = bgpData.announcements && bgpData.announcements.length > 0;
-    const hasWithdrawals = bgpData.withdrawals && bgpData.withdrawals.length > 0;
-    const event = hasAnnouncements ? 'announce' : 'withdraw';
-    const color = event === 'announce' ? this.ANNOUNCE_COLOR : this.WITHDRAW_COLOR;
-    
-    // Extract origin ASN from path (last ASN in the path)
-    let originASN = parseInt(bgpData.peer_asn); // fallback
-    if (bgpData.path && bgpData.path.length > 0) {
-      const lastPathElement = bgpData.path[bgpData.path.length - 1];
-      originASN = Array.isArray(lastPathElement) ? lastPathElement[0] : lastPathElement;
-    }
-    
-    // Get geographic locations
-    const peerLocation = this.getPeerLocation(bgpData);
-    const originLocation = getASNLocation(originASN);
-    
-    // Debug: log location mapping
-    if (this.filteredCount < 3) {
-      console.log('🌍 Peer location:', peerLocation);
-      console.log('🌍 Origin location:', originLocation);
-    }
-    
-    // Use fallback locations if we can't find specific ones
-    const finalPeerLocation = peerLocation || { lat: 52.3676, lng: 4.9041 }; // Amsterdam default
-    const finalOriginLocation = originLocation || { lat: 40.7128, lng: -74.0060 }; // NYC default
-    
-    // Debug: show final locations
-    if (this.filteredCount < 3) {
-      console.log('🌍 Final peer location:', finalPeerLocation);
-      console.log('🌍 Final origin location:', finalOriginLocation);
-    }
-    
-    // Skip only if we still don't have valid locations
-    if (!finalPeerLocation || !finalOriginLocation ||
-        !finalPeerLocation.lat || !finalPeerLocation.lng || 
-        !finalOriginLocation.lat || !finalOriginLocation.lng) {
-      if (this.filteredCount < 3) {
-        console.log('❌ Skipping event due to invalid location data');
-      }
-      return arcs;
-    }
-    
-    // Handle RIPE format - extract prefixes from announcements and withdrawals
-    let prefixes = [];
-    
-    // Add announced prefixes
+    // Process announcements
     if (bgpData.announcements && bgpData.announcements.length > 0) {
+      const path = bgpData.path || []; // AS path is at top level
+      const peerAsn = bgpData.peer_asn; // The AS announcing this route
+      
+      // Get origin ASN from path (last ASN) or fallback to peer
+      let originAsn = peerAsn;
+      if (path.length > 0) {
+        const lastPathElement = path[path.length - 1];
+        originAsn = Array.isArray(lastPathElement) ? lastPathElement[0] : lastPathElement;
+      }
+      
       bgpData.announcements.forEach(announcement => {
-        if (announcement.prefixes) {
-          prefixes = prefixes.concat(announcement.prefixes);
-        }
+        if (!announcement.prefixes || announcement.prefixes.length === 0) return;
+        
+        announcement.prefixes.forEach(prefix => {
+          const srcLocation = getASNLocation(peerAsn) || { lat: 52.3676, lng: 4.9041 }; // Amsterdam fallback
+          const dstLocation = getASNLocation(originAsn) || { lat: 40.7128, lng: -74.0060 }; // NYC fallback
+          
+          events.push({
+            schema: 'bgp.arc.v0',
+            ts: timestamp,
+            event: 'announce',
+            prefix: prefix,
+            origin_asn: originAsn,
+            peer_asn: peerAsn,
+            as_path: path,
+            // IMPORTANT: These locations will be peer → origin, not RRC → origin
+            src: srcLocation,  // Where the announcement comes from
+            dst: dstLocation, // Where the prefix belongs
+            color: this.ANNOUNCE_COLOR,
+            // Add metadata for future anomaly detection
+            rrc: bgpData.host, // Keep for debugging, but don't visualize
+            path_length: path.length,
+            communities: announcement.communities || []
+          });
+        });
       });
     }
     
-    // Add withdrawn prefixes 
+    // Process withdrawals similarly
     if (bgpData.withdrawals && bgpData.withdrawals.length > 0) {
-      prefixes = prefixes.concat(bgpData.withdrawals);
+      const peerAsn = bgpData.peer_asn;
+      
+      // Withdrawals are just an array of prefixes in RIPE format
+      bgpData.withdrawals.forEach(prefix => {
+        if (!prefix) return;
+        
+        const srcLocation = getASNLocation(peerAsn) || { lat: 52.3676, lng: 4.9041 }; // Amsterdam fallback
+        
+        events.push({
+          schema: 'bgp.arc.v0',
+          ts: timestamp,
+          event: 'withdraw',
+          prefix: prefix,
+          origin_asn: null, // Unknown for withdrawals
+          peer_asn: peerAsn,
+          as_path: [],
+          src: srcLocation,
+          dst: { lat: 0, lng: 0 }, // Or use last known origin for this prefix
+          color: this.WITHDRAW_COLOR,
+          rrc: bgpData.host
+        });
+      });
     }
     
-    // If no prefixes found, skip this event
-    if (prefixes.length === 0) {
-      return arcs;
-    }
-    
-    prefixes.forEach(prefix => {
-      if (!prefix) return;
-      
-      const arc = {
-        schema: 'bgp.arc.v0',
-        ts: bgpData.timestamp || (Date.now() / 1000),
-        event: event,
-        prefix: prefix,
-        origin_asn: originASN,
-        peer_asn: parseInt(bgpData.peer_asn),
-        as_path: bgpData.path || [bgpData.peer_asn, originASN],
-        src: { 
-          lat: finalPeerLocation.lat, 
-          lng: finalPeerLocation.lng 
-        },
-        dst: { 
-          lat: finalOriginLocation.lat, 
-          lng: finalOriginLocation.lng 
-        },
-        color: color,
-        // Additional metadata for debugging/enrichment
-        rrc: bgpData.host || 'unknown',
-        raw_type: bgpData.type
-      };
-      
-      arcs.push(arc);
-    });
-    
-    return arcs;
+    return events;
   }
 
   /**
