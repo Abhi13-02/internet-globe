@@ -8,7 +8,7 @@ const cors = require('cors');
 const app = express();
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379/0';
-const STREAM = process.env.STREAM || 'bgp.events';
+const STREAM = process.env.STREAM || 'bgp.raw';
 const GROUP = process.env.GROUP || 'bgp:ws';
 const CONSUMER_ID = process.env.CONSUMER_ID || 'gateway-1';
 const WS_BATCH_MS = parseInt(process.env.WS_BATCH_MS || '1000');

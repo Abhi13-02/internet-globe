@@ -38,6 +38,7 @@ class RipeClient {
     this.eventsGenerated = 0;   // Individual prefix events
     this.eventsSent = 0;        // Events sent to Redis
     this.subscriptionTime = 0;
+    this.filteredCount = 0;     // Debug counter
     
     // Color configuration
     this.ANNOUNCE_COLOR = '#3aa3ff';
@@ -303,7 +304,7 @@ shouldProcessEvent(bgpData) {
         },
         color: color,
         // Additional metadata for debugging/enrichment
-        rrc: bgpData.collector || 'unknown',
+        rrc: bgpData.host || 'unknown',
         raw_type: bgpData.type
       };
       
@@ -317,9 +318,9 @@ shouldProcessEvent(bgpData) {
    * Get peer location based on RRC collector
    */
   getPeerLocation(bgpData) {
-    if (bgpData.collector && typeof bgpData.collector === 'string') {
-      // Extract RRC ID from collector string (e.g., "rrc00" -> 0)
-      const rrcMatch = bgpData.collector.match(/rrc(\d+)/);
+    if (bgpData.host && typeof bgpData.host === 'string') {
+      // Extract RRC ID from host string (e.g., "rrc00" -> 0)
+      const rrcMatch = bgpData.host.match(/rrc(\d+)/);
       if (rrcMatch) {
         const rrcId = parseInt(rrcMatch[1]);
         return getRRCLocation(rrcId);

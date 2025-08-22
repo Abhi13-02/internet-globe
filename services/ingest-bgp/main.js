@@ -5,7 +5,7 @@ const RipeClient = require('./ripe-client');
 
 // Environment configuration
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379/0';
-const STREAM = process.env.STREAM || 'bgp.events';
+const STREAM = process.env.STREAM || 'bgp.raw';
 const MAXLEN = parseInt(process.env.STREAM_MAXLEN || '50000');
 const USE_MOCK_DATA = process.env.USE_MOCK_DATA === 'true';
 
@@ -143,7 +143,7 @@ async function runMockGenerator(redis) {
       console.error('Error adding to stream:', error);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 5)); // ~100 events/sec
+    await new Promise(resolve => setTimeout(resolve, 20)); // ~50 events/sec
   }
 }
 
