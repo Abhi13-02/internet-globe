@@ -38,6 +38,9 @@ class RipeClient {
     this.throttleManager = new ThrottleManager(500); // 500ms throttle window for better duplicate detection
     this.metricsManager = new MetricsManager();
     
+    // Metrics interval tracking
+    this.metricsInterval = null;
+    
     // Initialize GeoLite2 databases
     this.initializeGeolocation();
     
@@ -127,7 +130,12 @@ class RipeClient {
    * Start metrics logging every 10 seconds
    */
   startMetricsLogging() {
-    setInterval(() => {
+    // Clear any existing metrics interval to prevent multiple timers
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval);
+    }
+    
+    this.metricsInterval = setInterval(() => {
       this.metricsManager.logMetrics(this.throttleManager);
       
       // Clean up old throttling data
@@ -235,6 +243,12 @@ class RipeClient {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+    
+    // Clear metrics interval
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval);
+      this.metricsInterval = null;
     }
   }
 }

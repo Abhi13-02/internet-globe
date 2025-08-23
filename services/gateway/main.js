@@ -27,7 +27,6 @@ app.use(cors({
 // Redis client
 const redis = createClient({ url: REDIS_URL });
 const clients = new Set();
-let messageQueue = [];
 
 // Health check endpoint
 app.get('/healthz', async (req, res) => {
@@ -51,15 +50,15 @@ async function ensureGroup() {
   }
 }
 
-// Reader function to read from Redis stream
-async function reader() {
+// Real-time processor - sends messages immediately, no batching
+async function realtimeProcessor() {
   while (true) {
     try {
       const response = await redis.xReadGroup(
         GROUP,
         CONSUMER_ID,
         { key: STREAM, id: '>' },
-        { COUNT: READ_COUNT, BLOCK: BLOCK_MS }
+        { COUNT: 1, BLOCK: BLOCK_MS } // Read one message at a time
       );
 
       if (!response || response.length === 0) {
@@ -68,75 +67,47 @@ async function reader() {
 
       for (const stream of response) {
         for (const message of stream.messages) {
+          let data = null;
           try {
-            const data = JSON.parse(message.message.data || '{}');
-            messageQueue.push({ id: message.id, data });
+            data = JSON.parse(message.message.data || '{}');
           } catch (error) {
-            messageQueue.push({ id: message.id, data: null });
+            console.error('parse error:', error);
+          }
+
+          // Send immediately if we have data and clients
+          if (data && clients.size > 0) {
+            const payload = JSON.stringify({ type: 'bgp', items: [data] });
+            const deadClients = [];
+
+            for (const ws of clients) {
+              try {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(payload);
+                } else {
+                  deadClients.push(ws);
+                }
+              } catch (error) {
+                deadClients.push(ws);
+              }
+            }
+
+            // Remove dead clients
+            for (const ws of deadClients) {
+              clients.delete(ws);
+            }
+          }
+
+          // Ack the message
+          try {
+            await redis.xAck(STREAM, GROUP, [message.id]);
+          } catch (error) {
+            console.error('xack error:', error);
           }
         }
       }
     } catch (error) {
-      console.error('reader error:', error);
+      console.error('realtime processor error:', error);
       await new Promise(resolve => setTimeout(resolve, 500));
-    }
-  }
-}
-
-// Batcher function to send batched messages to WebSocket clients
-async function batcher() {
-  while (true) {
-    await new Promise(resolve => setTimeout(resolve, WS_BATCH_MS));
-    
-    const toAck = [];
-    const batch = [];
-
-    // Drain the queue
-    while (messageQueue.length > 0) {
-      const { id, data } = messageQueue.shift();
-      toAck.push(id);
-      if (data) {
-        batch.push(data);
-      }
-    }
-
-    if (batch.length === 0 || clients.size === 0) {
-      // Still ack to move group cursor forward
-      if (toAck.length > 0) {
-        try {
-          await redis.xAck(STREAM, GROUP, toAck);
-        } catch (error) {
-          console.error('xack error:', error);
-        }
-      }
-      continue;
-    }
-
-    const payload = JSON.stringify({ type: 'bgp', items: batch });
-    const deadClients = [];
-
-    for (const ws of clients) {
-      try {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(payload);
-        } else {
-          deadClients.push(ws);
-        }
-      } catch (error) {
-        deadClients.push(ws);
-      }
-    }
-
-    // Remove dead clients
-    for (const ws of deadClients) {
-      clients.delete(ws);
-    }
-
-    // Ack after successful broadcast
-    try {
-      await redis.xAck(STREAM, GROUP, toAck);
-    } catch (error) {
-      console.error('xack error:', error);
     }
   }
 }
@@ -146,9 +117,8 @@ async function startup() {
   await redis.connect();
   await ensureGroup();
   
-  // Start background tasks
-  reader();
-  batcher();
+  // Start real-time processor
+  realtimeProcessor();
 }
 
 // Create HTTP server
