@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "WebSearch",
+      "WebFetch(domain:ris-live.ripe.net)",
+      "WebFetch(domain:labs.ripe.net)",
+      "WebFetch(domain:medium.com)",
+      "Bash(timeout:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

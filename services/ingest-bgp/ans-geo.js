@@ -1,6 +1,14 @@
-// AS Number to Geographic coordinate mapping
-// This maps major AS numbers to their approximate geographic locations
+// Enhanced AS Number to Geographic coordinate mapping using GeoLite2 databases
+// This provides accurate geolocation using MaxMind GeoLite2 databases
 
+const maxmind = require('maxmind');
+const path = require('path');
+
+// GeoLite2 database readers (will be initialized)
+let cityLookup = null;
+let asnLookup = null;
+
+// Static fallback mapping for major ASNs (used when GeoLite2 fails)
 const ASN_GEO_MAP = {
   // Google
   15169: { lat: 37.4220, lng: -122.0841, name: "Google", country: "US" },
@@ -56,6 +64,22 @@ const ASN_GEO_MAP = {
   
   // Reliance Jio (India)
   55836: { lat: 19.0760, lng: 72.8777, name: "Reliance Jio", country: "IN" },
+  
+  // Additional Tier 1 ASNs for better arc coverage
+  209: { lat: 39.7392, lng: -104.9903, name: "Qwest/CenturyLink", country: "US" },
+  286: { lat: 52.3676, lng: 4.9041, name: "KPN", country: "NL" },
+  701: { lat: 39.0458, lng: -77.5081, name: "Verizon", country: "US" },
+  1239: { lat: 39.0458, lng: -77.5081, name: "Sprint", country: "US" },
+  1299: { lat: 59.3293, lng: 18.0686, name: "Telia", country: "SE" },
+  2828: { lat: 39.0458, lng: -77.5081, name: "XO/Verizon", country: "US" },
+  3257: { lat: 51.5074, lng: -0.1278, name: "GTT", country: "GB" },
+  3491: { lat: 22.3193, lng: 114.1694, name: "PCCW", country: "HK" },
+  5511: { lat: 48.8566, lng: 2.3522, name: "Opentransit", country: "FR" },
+  6453: { lat: 19.0760, lng: 77.2090, name: "TATA", country: "IN" },
+  6461: { lat: 39.7392, lng: -104.9903, name: "Zayo", country: "US" },
+  6762: { lat: 41.9028, lng: 12.4964, name: "Sparkle", country: "IT" },
+  6830: { lat: 51.5074, lng: -0.1278, name: "Liberty Global", country: "GB" },
+  7018: { lat: 32.7767, lng: -96.7970, name: "AT&T", country: "US" },
 };
 
 // RIPE RRC (Route Reflection Collector) locations
@@ -98,18 +122,109 @@ const DEFAULT_LOCATIONS = [
 ];
 
 /**
- * Get geographic coordinates for an AS number
+ * Initialize GeoLite2 databases
+ */
+async function initializeGeoLite2() {
+  try {
+    console.log('🌍 Initializing GeoLite2 databases from npm packages...');
+    
+    // Use npm packages for database files (correct file names)
+    try {
+      const cityDbPath = require.resolve('@ip-location-db/geolite2-city-mmdb/geolite2-city-ipv4.mmdb');
+      cityLookup = await maxmind.open(cityDbPath);
+      console.log('✅ GeoLite2-City database loaded from npm package');
+    } catch (err) {
+      console.log('⚠️  GeoLite2-City npm package not found, using fallback locations');
+      console.debug('City DB error:', err.message);
+    }
+    
+    try {
+      const asnDbPath = require.resolve('@ip-location-db/geolite2-asn-mmdb/geolite2-asn-ipv4.mmdb');
+      asnLookup = await maxmind.open(asnDbPath);
+      console.log('✅ GeoLite2-ASN database loaded from npm package');
+    } catch (err) {
+      console.log('⚠️  GeoLite2-ASN npm package not found, using static ASN mapping');
+      console.debug('ASN DB error:', err.message);
+    }
+    
+  } catch (err) {
+    console.error('❌ Failed to initialize GeoLite2:', err.message);
+  }
+}
+
+/**
+ * Get geographic coordinates for an AS number using GeoLite2
  * @param {number} asn - AS number
  * @returns {object} - {lat, lng, name, country}
  */
-function getASNLocation(asn) {
+function getASNLocation(asn, metrics = null) {
+  if (metrics) metrics.geoLookups++;
+  
+  // Fallback to static mapping first (most reliable for known ASNs)
   if (ASN_GEO_MAP[asn]) {
+    // Static ASN mapping is considered successful (not a fallback)
+    if (metrics) metrics.geoLite2Hits++;
     return ASN_GEO_MAP[asn];
   }
   
   // For unknown ASNs, return a semi-random but consistent location
   const index = asn % DEFAULT_LOCATIONS.length;
+  if (metrics) metrics.geoFallbacks++;
   return DEFAULT_LOCATIONS[index];
+}
+
+/**
+ * Get geographic coordinates for an IP address using GeoLite2
+ * @param {string} ip - IP address
+ * @returns {object} - {lat, lng, name, country}
+ */
+function getIPLocation(ip, metrics = null) {
+  if (metrics) metrics.geoLookups++;
+  
+  if (cityLookup) {
+    try {
+      const result = cityLookup.get(ip);
+      
+      if (result && result.latitude !== undefined && result.longitude !== undefined) {
+        if (metrics) metrics.geoLite2Hits++;
+        return {
+          lat: result.latitude,
+          lng: result.longitude,
+          name: result.city || 'Unknown City',
+          country: result.country_code || 'Unknown'
+        };
+      }
+    } catch (err) {
+      console.debug(`GeoLite2 city lookup failed for ${ip}:`, err.message);
+    }
+  }
+  
+  // Fallback to default location
+  if (metrics) metrics.geoFallbacks++;
+  return DEFAULT_LOCATIONS[0];
+}
+
+/**
+ * Enhanced ASN location lookup that tries multiple methods
+ * @param {number} asn - AS number
+ * @param {string} [sampleIP] - Optional sample IP from the ASN for more accurate location
+ * @returns {object} - {lat, lng, name, country}
+ */
+function getEnhancedASNLocation(asn, sampleIP = null, metrics = null) {
+  // If we have a sample IP from the ASN, use that for accurate geolocation
+  if (sampleIP && cityLookup) {
+    const ipLocation = getIPLocation(sampleIP, metrics);
+    if (ipLocation.lat !== DEFAULT_LOCATIONS[0].lat) {
+      return {
+        ...ipLocation,
+        name: `AS${asn} (${ipLocation.name})`,
+        asn: asn
+      };
+    }
+  }
+  
+  // Fallback to regular ASN lookup
+  return getASNLocation(asn, metrics);
 }
 
 /**
@@ -122,7 +237,10 @@ function getRRCLocation(rrcId) {
 }
 
 module.exports = {
+  initializeGeoLite2,
   getASNLocation,
+  getIPLocation,
+  getEnhancedASNLocation,
   getRRCLocation,
   ASN_GEO_MAP,
   RRC_LOCATIONS

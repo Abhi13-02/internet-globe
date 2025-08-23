@@ -9,7 +9,10 @@
     "dev:mock": "USE_MOCK_DATA=true node main.js"
   },
   "dependencies": {
+    "@ip-location-db/geolite2-asn-mmdb": "^2.3.2025082119",
+    "@ip-location-db/geolite2-city-mmdb": "^2.3.2025082019",
     "dotenv": "^17.2.1",
+    "maxmind": "^5.0.0",
     "redis": "^4.6.12",
     "ws": "^8.16.0"
   },
